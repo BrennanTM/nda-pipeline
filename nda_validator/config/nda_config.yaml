@@ -1,0 +1,58 @@
+collections:
+  C3996:
+    data_directory: test_data/C3996
+    required_fields:
+    - subjectkey
+    - src_subject_id
+    - interview_age
+    - interview_date
+    - sex
+    type: behavioral
+  C4223:
+    data_directory: test_data/C4223
+    required_fields:
+    - subjectkey
+    - src_subject_id
+    - interview_age
+    - interview_date
+    - sex
+    - eeg_file
+    type: eeg
+  C4819:
+    data_directory: test_data/C4819
+    required_fields:
+    - subjectkey
+    - src_subject_id
+    - interview_age
+    - interview_date
+    - sex
+    - mri_file
+    type: mri
+  C5096:
+    data_directory: test_data/C5096
+    required_fields:
+    - subjectkey
+    - src_subject_id
+    - interview_age
+    - interview_date
+    - sex
+    type: behavioral
+logging:
+  file: nda_validation.log
+  format: '%(asctime)s - %(levelname)s - %(message)s'
+  level: INFO
+validation:
+  allowed_extensions:
+    behavioral:
+    - .csv
+    - .xlsx
+    eeg:
+    - .set
+    - .edf
+    - .bdf
+    metadata:
+    - .csv
+    mri:
+    - .nii
+    - .dcm
+  file_size_limit: 2.5

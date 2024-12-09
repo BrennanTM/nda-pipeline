@@ -3,94 +3,141 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import pandas as pd
 from datetime import datetime
-from .base import NDAValidator
+from .base import NDAValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
 
 class MRIValidator(NDAValidator):
     """Validates MRI data files for NDA submission."""
     
-    REQUIRED_COLUMNS = [
-        'subjectkey',
-        'src_subject_id',
-        'interview_age',
-        'interview_date',
-        'sex',
-        'image_file',      # Path to MRI data file
-        'image_type',      # Type of MRI scan
-        'acquisition_date' # Date of scan
-    ]
-    
-    VALID_EXTENSIONS = ['.nii', '.nii.gz', '.dcm']
-    VALID_IMAGE_TYPES = ['T1', 'T2', 'fMRI', 'DTI']
-    
     def __init__(self, collection_id: str):
         super().__init__(collection_id)
-        
-    def validate_file(self, metadata_path: Path, data_dir: Path = None) -> bool:
+        self.required_fields = [
+            'subjectkey',
+            'src_subject_id',
+            'interview_age',
+            'interview_date',
+            'sex',
+            'image_file',      # Path to MRI data file
+            'image_type',      # Type of MRI scan
+            'acquisition_date' # Date of scan
+        ]
+        self.valid_extensions = ['.nii', '.nii.gz', '.dcm']
+        self.valid_image_types = ['T1', 'T2', 'fMRI', 'DTI']
+    
+    def validate_file(self, metadata_path: Path, data_dir: Optional[Path] = None) -> ValidationResult:
         """
-        Validate MRI metadata and optionally the referenced data files.
+        Validate MRI metadata and data files with comprehensive checking.
         
         Args:
             metadata_path: Path to MRI metadata CSV
             data_dir: Optional directory containing MRI data files
+            
+        Returns:
+            ValidationResult containing validation details
         """
-        if not self._validate_file_format(metadata_path):
-            return False
-            
+        errors = []
+        warnings = []
+        metadata = {}
+        
         try:
-            df = pd.read_csv(metadata_path)
-            
-            # Validate basic structure
-            if not self._validate_data_structure(df):
-                return False
-                
-            # Validate image types
-            invalid_types = df[~df['image_type'].isin(self.VALID_IMAGE_TYPES)]
-            if not invalid_types.empty:
-                self.validation_errors.append(
-                    f"Invalid image types found: {invalid_types['image_type'].unique().tolist()}"
+            # Check file exists
+            if not metadata_path.exists():
+                return ValidationResult(
+                    is_valid=False,
+                    errors=[f"File not found: {metadata_path}"],
+                    warnings=[],
+                    metadata={}
                 )
-                return False
-                
+
+            # Read file
+            try:
+                df = pd.read_csv(metadata_path)
+            except Exception as e:
+                return ValidationResult(
+                    is_valid=False,
+                    errors=[f"Error reading file: {str(e)}"],
+                    warnings=[],
+                    metadata={}
+                )
+
+            # Validate required fields
+            missing_fields = [field for field in self.required_fields if field not in df.columns]
+            if missing_fields:
+                return ValidationResult(
+                    is_valid=False,
+                    errors=[f"Missing required fields: {', '.join(missing_fields)}"],
+                    warnings=[],
+                    metadata={}
+                )
+
+            # Validate MRI metadata
+            invalid_types = df[~df['image_type'].isin(self.valid_image_types)]
+            if not invalid_types.empty:
+                errors.append(
+                    f"Invalid image types: {invalid_types['image_type'].unique().tolist()}"
+                )
+
             # Validate acquisition dates
             try:
-                pd.to_datetime(df['acquisition_date'])
+                dates = pd.to_datetime(df['acquisition_date'])
+                future_dates = dates[dates > pd.Timestamp.now()]
+                if not future_dates.empty:
+                    errors.append(
+                        f"Future acquisition dates in rows: {future_dates.index.tolist()}"
+                    )
             except Exception:
-                self.validation_errors.append("Invalid acquisition_date format")
-                return False
-                
-            # If data directory provided, validate image files
+                errors.append("Invalid acquisition_date format")
+
+            # Validate image files if data_dir provided
             if data_dir:
-                if not self._validate_image_files(df, data_dir):
-                    return False
+                for idx, row in df.iterrows():
+                    if pd.isna(row['image_file']):
+                        errors.append(
+                            f"Missing image_file path for subject {row['subjectkey']} in row {idx + 1}"
+                        )
+                        continue
                     
-            return True
-            
+                    file_path = data_dir / row['image_file']
+                    if not file_path.exists():
+                        errors.append(f"Image file not found: {file_path}")
+                        continue
+                    
+                    if not any(str(file_path).lower().endswith(ext) for ext in self.valid_extensions):
+                        errors.append(
+                            f"Invalid image format for {file_path}"
+                        )
+                    
+                    # Check file size
+                    size_mb = file_path.stat().st_size / (1024 * 1024)
+                    if size_mb < 1:  # Less than 1MB
+                        warnings.append(
+                            f"Suspicious file size ({size_mb:.2f}MB) for {file_path}"
+                        )
+
+            # Collect metadata if no errors
+            if len(errors) == 0:
+                metadata = {
+                    'total_scans': len(df),
+                    'image_type_distribution': df['image_type'].value_counts().to_dict(),
+                    'acquisition_date_range': {
+                        'start': df['acquisition_date'].min(),
+                        'end': df['acquisition_date'].max()
+                    }
+                }
+
         except Exception as e:
-            self.validation_errors.append(f"Error reading file: {str(e)}")
-            return False
-            
-    def _validate_image_files(self, df: pd.DataFrame, data_dir: Path) -> bool:
-        """Validate referenced MRI data files exist and are valid."""
-        is_valid = True
-        
-        for _, row in df.iterrows():
-            if pd.isna(row['image_file']):
-                self.validation_errors.append(f"Missing image_file path for subject {row['subjectkey']}")
-                is_valid = False
-                continue
-                
-            file_path = data_dir / row['image_file']
-            if not file_path.exists():
-                self.validation_errors.append(f"Image file not found: {file_path}")
-                is_valid = False
-                continue
-                
-            if file_path.suffix.lower() not in self.VALID_EXTENSIONS:
-                self.validation_errors.append(
-                    f"Invalid image file format {file_path.suffix} for {file_path}"
-                )
-                is_valid = False
-                
-        return is_valid
+            logger.error(f"MRI validation error: {str(e)}")
+            return ValidationResult(
+                is_valid=False,
+                errors=[f"Validation error: {str(e)}"],
+                warnings=[],
+                metadata={}
+            )
+
+        return ValidationResult(
+            is_valid=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+            metadata=metadata
+        )
